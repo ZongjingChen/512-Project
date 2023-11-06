@@ -122,6 +122,8 @@ class TopClusModel(BertPreTrainedModel):
         self.bert.eval()
         bert_outputs = self.bert(input_ids,
                                  attention_mask=attention_mask)
+        # bert embeddings
+        # shape: (32, 512, 768) - 32 documents, each document has 512 words (include paddings), each word has 768 dimensions
         last_hidden_states = bert_outputs[0]
         attention_mask[:, 0] = 0
         trans_states = self.dense(last_hidden_states)
@@ -131,11 +133,15 @@ class TopClusModel(BertPreTrainedModel):
         attn_mask = attention_mask == 0
         attn_logits.masked_fill_(attn_mask, float('-inf'))
         attn_weights = F.softmax(attn_logits, dim=-1)
+        # shape: (32, 768) - 32 document embeddings 
         doc_emb = (last_hidden_states * attn_weights.unsqueeze(-1)).sum(dim=1)
         
         valid_word_embs = last_hidden_states[~attn_mask]
         valid_word_ids = input_ids[~attn_mask]
-        _, z = self.ae(valid_word_embs)
-        sim = self.topic_sim(z)
-        _, z = self.ae(doc_emb)
-        return z, valid_word_ids, sim
+        # shape: (x, 100) - x valid words in latent space, x < 32 * 512
+        _, z_word = self.ae(valid_word_embs)
+        sim = self.topic_sim(z_word)
+
+        # shape (32, 100) - 32 docs in latent space
+        _, z_doc = self.ae(doc_emb)
+        return z_doc, z_word, valid_word_ids, sim

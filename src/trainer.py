@@ -136,33 +136,55 @@ class TopClusTrainer(object):
         model = self.model.to(self.device)
         model.eval()
         latent_doc_embs = []
-        word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters))
+        # {word_id : latent_imbedding}
+        latent_word_emb_dict = {}
         word_topic_sim_dict = defaultdict(list)
+        b = 0
         with torch.no_grad():
             for batch in tqdm(dataset_loader, desc="Inference"):
+                # shape: (32,512)
                 input_ids = batch[0].to(self.device)
                 attention_mask = batch[1].to(self.device)
                 max_len = attention_mask.sum(-1).max().item()
                 input_ids, attention_mask = tuple(t[:, :max_len] for t in (input_ids, attention_mask))
-                latent_doc_emb, word_ids, sim = model.inference(input_ids, attention_mask)
+                # print(input_ids.shape)
+                # print(input_ids)
+                latent_doc_emb, latent_word_embs, word_ids, sim = model.inference(input_ids, attention_mask)
                 latent_doc_embs.append(latent_doc_emb.detach().cpu())
-                for word_id, s in zip(word_ids, sim):
+                for latent_word_emb, word_id, s in zip(latent_word_embs, word_ids, sim):
                     word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
+                    if word_id.item() not in latent_word_emb_dict:
+                        latent_word_emb_dict[word_id.item()] = latent_word_emb
+                # if b == 1:
+                #     break
+                b += 1
+        # len: 30522     
+        # print(len(self.vocab))
+        word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters))
+        # iterate through all words in vocabulary, i is word id
         for i in range(len(word_topic_sim)):
+            # if the word appears in all the documents more than 5 times
             if len(word_topic_sim_dict[i]) > 5:
                 word_topic_sim[i] = torch.cat(word_topic_sim_dict[i], dim=0).mean(dim=0)
+            else:
+                if i in latent_word_emb_dict:
+                    del latent_word_emb_dict[i]
         word_topic_sim[self.filter_idx, :] = -1
 
         # better organized topic display
         topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
         cur_idx = torch.randint(len(topic_sim_mat), (1,))
         topic_file = open(os.path.join(self.res_dir, f"topics{suffix}.txt"), "w")
+        latent_word_emb_list = []
         for i in range(len(topic_sim_mat)):
             sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
             _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
             result_string = []
             for idx in top_idx:
                 result_string.append(f"{self.inv_vocab[idx.item()]}")
+            topic_list = [latent_word_emb_dict[idx.item()] for idx in top_idx]
+            topic_tensor = torch.stack(topic_list, dim=0)
+            latent_word_emb_list.append(topic_tensor)
             topic_file.write(f"Topic {i}: {','.join(result_string)}\n")
             topic_sim_mat[:, sort_idx] = -1
             cur_idx = sort_idx
@@ -171,6 +193,14 @@ class TopClusTrainer(object):
         doc_emb_path = os.path.join(self.res_dir, "latent_doc_emb.pt")
         print(f"Saving document embeddings to {doc_emb_path}")
         torch.save(latent_doc_embs, doc_emb_path)
+
+        word_emb_path = os.path.join(self.res_dir, "latent_word_clusters_emb.pt")
+        latent_word_clusters = torch.stack(latent_word_emb_list, dim=0)
+        print(f'Saving latent word embedding clusters to {word_emb_path}')
+        # shape (100, k, 100) - 100 topics, each topic has k word embeddings, each word embedding ias 100 dimension
+        # print(latent_word_clusters.shape)
+        # print(latent_word_clusters[0].shape)
+        torch.save(latent_word_clusters, word_emb_path)
         return 
 
     # compute target distribution for distinctive topic clustering
@@ -199,7 +229,9 @@ class TopClusTrainer(object):
                 valid_pos = batch[2].to(self.device)
                 max_len = attention_mask.sum(-1).max().item()
                 input_ids, attention_mask, valid_pos = tuple(t[:, :max_len] for t in (input_ids, attention_mask, valid_pos))
+
                 doc_emb, input_embs, output_embs, rec_doc_emb, p_word = model(input_ids, attention_mask, valid_pos)
+                
                 rec_loss = F.mse_loss(output_embs, input_embs)          # Lpre for f, g
                 rec_doc_loss = F.mse_loss(rec_doc_emb, doc_emb)         # Lrec
                 targets = self.target_distribution(p_word).detach()     # q(tk|zi(w))
