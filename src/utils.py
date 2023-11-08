@@ -7,6 +7,7 @@ from nltk.tag import pos_tag
 from sklearn.cluster import KMeans
 import numpy as np
 from sklearn.metrics.cluster import normalized_mutual_info_score
+import matplotlib.pyplot as plt
 
 
 class TopClusUtils(object):
@@ -65,3 +66,35 @@ class TopClusUtils(object):
         nmi = normalized_mutual_info_score(y_pred, labels)
         print(f"NMI score: {nmi:.4f}")
         return
+
+# topic_emb: (1, n) n = num dimentions
+# word_embs: (k, n) k = topk
+def dimension_reduction(topic_emb, word_embs):
+    topic_emb_np = np.array(topic_emb)
+    topic_emb_np = np.array([topic_emb_np])
+    word_embs_np = np.array(word_embs)
+
+    n = topic_emb_np.size
+    orthogonal_complement = []
+
+    for _ in range(n - 1):
+        U, S, Vt = np.linalg.svd(topic_emb_np)
+        result_row = Vt[-1, :]
+        topic_emb_np = np.vstack([topic_emb_np, result_row])
+        orthogonal_complement.append(result_row)
+    orthogonal_complement = np.array(orthogonal_complement)
+    dim_reduced_embs = np.matmul(orthogonal_complement, word_embs_np.transpose()).transpose()
+    # normalize
+    row_norms = np.linalg.norm(dim_reduced_embs, axis=1, keepdims=True)
+    normalized_embs = dim_reduced_embs / row_norms
+    return torch.tensor(normalized_embs)
+    # print(orthogonal_complement)
+    
+
+if __name__ == '__main__':
+    topic_emb = torch.tensor([0,0,1])
+    word_embs = torch.tensor([[1,2,3],[2,3,4],[3,4,5],[4,5,6]])
+    print(dimension_reduction(topic_emb, word_embs))
+
+
+    

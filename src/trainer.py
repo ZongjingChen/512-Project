@@ -173,11 +173,13 @@ class TopClusTrainer(object):
 
         # better organized topic display
         topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
+        # print(topic_sim_mat)
         cur_idx = torch.randint(len(topic_sim_mat), (1,))
         topic_file = open(os.path.join(self.res_dir, f"topics{suffix}.txt"), "w")
         latent_word_emb_list = []
         for i in range(len(topic_sim_mat)):
             sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+            # print(sort_idx, cur_idx)
             _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
             result_string = []
             for idx in top_idx:
@@ -197,8 +199,8 @@ class TopClusTrainer(object):
         word_emb_path = os.path.join(self.res_dir, "latent_word_clusters_emb.pt")
         latent_word_clusters = torch.stack(latent_word_emb_list, dim=0)
         print(f'Saving latent word embedding clusters to {word_emb_path}')
-        # shape (100, k, 100) - 100 topics, each topic has k word embeddings, each word embedding ias 100 dimension
-        # print(latent_word_clusters.shape)
+        # shape (100, k, 100) - 100 topics, each topic has k word embeddings, each word embedding has 100 dimension
+        # print(latent_word_clusters)
         # print(latent_word_clusters[0].shape)
         torch.save(latent_word_clusters, word_emb_path)
         return 
@@ -224,6 +226,7 @@ class TopClusTrainer(object):
             total_clus_loss = 0
             for batch_idx, batch in enumerate(tqdm(dataset_loader, desc=f"Clustering epoch {epoch+1}/{epochs}")):
                 optimizer.zero_grad()
+                # shape: (32, 512)
                 input_ids = batch[0].to(self.device)
                 attention_mask = batch[1].to(self.device)
                 valid_pos = batch[2].to(self.device)
