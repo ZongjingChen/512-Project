@@ -29,7 +29,7 @@ class TopClusTrainer(object):
                                                   n_clusters=args.n_clusters,
                                                   kappa=args.kappa)
         self.utils = TopClusUtils()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps")
         self.latent_dim = eval(args.hidden_dims)[-1]
         tokenizer = BertTokenizer.from_pretrained(pretrained_lm, do_lower_case=True)
         self.vocab = tokenizer.get_vocab()
@@ -61,7 +61,7 @@ class TopClusTrainer(object):
         loader_file = os.path.join(dataset_dir, loader_name)
         assert os.path.exists(loader_file)
         print(f"Loading encoded texts from {loader_file}")
-        data = torch.load(loader_file)
+        data = torch.load(loader_file, map_location=self.device)
         return data
 
     # pretrain autoencoder with reconstruction loss
@@ -69,7 +69,7 @@ class TopClusTrainer(object):
         pretrained_path = os.path.join(self.data_dir, "pretrained.pt")
         if os.path.exists(pretrained_path):
             print(f"Loading pretrained model from {pretrained_path}")
-            trainer.model.ae.load_state_dict(torch.load(pretrained_path))
+            trainer.model.ae.load_state_dict(torch.load(pretrained_path, map_location=self.device))
         else:
             print(f"Pretraining autoencoder")
             sampler = RandomSampler(self.data)
@@ -100,7 +100,7 @@ class TopClusTrainer(object):
         model = self.model.to(self.device)
         if os.path.exists(latent_emb_path) and os.path.exists(latent_emb_path):
             print(f"Loading initial latent embeddings from {latent_emb_path}")
-            latent_embs, freq = torch.load(latent_emb_path)
+            latent_embs, freq = torch.load(latent_emb_path, map_location=self.device)
         else:
             sampler = SequentialSampler(self.data)
             dataset_loader = DataLoader(self.data, sampler=sampler, batch_size=self.batch_size)
@@ -128,6 +128,11 @@ class TopClusTrainer(object):
         kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed)
         kmeans.fit(latent_embs.numpy(), sample_weight=freq.numpy())
         model.topic_emb.data = torch.tensor(kmeans.cluster_centers_).to(self.device)
+        # save topic_emb
+        # topic_emb_path = os.path.join(self.res_dir, "topic_emb.pt")
+        # print(f"Saving topic embeddings to {topic_emb_path}")
+        # torch.save(model.topic_emb, topic_emb_path)
+
 
     # obtain topic discovery results and latent document embeddings for clustering
     def inference(self, topk=10, suffix=""):
@@ -175,32 +180,52 @@ class TopClusTrainer(object):
         topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
         cur_idx = torch.randint(len(topic_sim_mat), (1,))
         topic_file = open(os.path.join(self.res_dir, f"topics{suffix}.txt"), "w")
-        latent_word_emb_list = []
+        latent_word_emb_list = {}
+        id_list = []
         for i in range(len(topic_sim_mat)):
             sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+            # print(int(sort_idx))
             _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
             result_string = []
             for idx in top_idx:
                 result_string.append(f"{self.inv_vocab[idx.item()]}")
             topic_list = [latent_word_emb_dict[idx.item()] for idx in top_idx]
+            id_list.append(top_idx)
             topic_tensor = torch.stack(topic_list, dim=0)
-            latent_word_emb_list.append(topic_tensor)
+            latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
             topic_file.write(f"Topic {i}: {','.join(result_string)}\n")
             topic_sim_mat[:, sort_idx] = -1
             cur_idx = sort_idx
 
+        latent_word_emb_list=sorted(latent_word_emb_list.items())
+        print(latent_word_emb_list[0])
+        word_id_list = []
+        word_emb_list = []
+        for i in range(len(latent_word_emb_list)):
+            word_id_list.append(latent_word_emb_list[i][1][0])
+            word_emb_list.append(latent_word_emb_list[i][1][1])
+        # latent_word_emb_list = [e for _,w,e,t in latent_word_emb_list]
+        # word_id_list = [w for _,w,e in latent_word_emb_list]
         latent_doc_embs = torch.cat(latent_doc_embs, dim=0)
         doc_emb_path = os.path.join(self.res_dir, "latent_doc_emb.pt")
         print(f"Saving document embeddings to {doc_emb_path}")
         torch.save(latent_doc_embs, doc_emb_path)
 
         word_emb_path = os.path.join(self.res_dir, "latent_word_clusters_emb.pt")
-        latent_word_clusters = torch.stack(latent_word_emb_list, dim=0)
+        latent_word_clusters = torch.stack(word_emb_list, dim=0)
+        # print(latent_word_clusters.shape)
+        torch.save(latent_word_clusters, word_emb_path)
         print(f'Saving latent word embedding clusters to {word_emb_path}')
+
+        word_id_path = os.path.join(self.res_dir, "latent_word_cluster_id.pt")
+        latent_word_ids = torch.stack(word_id_list, dim=0)
+        # print(latent_word_ids.shape)
+        torch.save(latent_word_ids, word_id_path)
+        print(f'Saving word id list to {word_id_path}')
         # shape (100, k, 100) - 100 topics, each topic has k word embeddings, each word embedding ias 100 dimension
         # print(latent_word_clusters.shape)
         # print(latent_word_clusters[0].shape)
-        torch.save(latent_word_clusters, word_emb_path)
+        
         return 
 
     # compute target distribution for distinctive topic clustering
@@ -285,7 +310,7 @@ if __name__ == '__main__':
     if args.do_inference:
         model_path = os.path.join("datasets", args.dataset, "model.pt")
         try:
-            trainer.model.load_state_dict(torch.load(model_path))
+            trainer.model.load_state_dict(torch.load(model_path, map_location=trainer.device))
         except:
             print("No model found! Run clustering first!")
             exit(-1)
