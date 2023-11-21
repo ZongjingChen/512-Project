@@ -95,7 +95,7 @@ class TopClusTrainer(object):
             print(f"Pretrained model saved to {pretrained_path}")
 
     # initialize topic embeddings via K-Means clustering in the spherical latent space
-    def cluster_init(self):
+    def cluster_init(self, is_hierarchical=False):
         latent_emb_path = os.path.join(self.data_dir, "init_latent_emb.pt")
         model = self.model.to(self.device)
         if os.path.exists(latent_emb_path) and os.path.exists(latent_emb_path):
@@ -133,6 +133,44 @@ class TopClusTrainer(object):
         # print(f"Saving topic embeddings to {topic_emb_path}")
         # torch.save(model.topic_emb, topic_emb_path)
 
+        if is_hierarchical:
+            # init sub topic clusters
+            ini_topic_emb = F.normalize(model.topic_emb.data, dim=-1)
+            sim = torch.matmul(latent_embs, ini_topic_emb.t())
+            # latent_embs, input_ids, sim
+            latent_word_emb_dict = {}
+            word_topic_sim_dict = defaultdict(list)
+            for latent_word_emb, word_id, s in zip(latent_embs, input_ids, sim):
+                word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
+                if word_id.item() not in latent_word_emb_dict:
+                    latent_word_emb_dict[word_id.item()] = latent_word_emb
+            word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters))
+            for i in range(len(word_topic_sim)):
+                # if the word appears in all the documents more than 5 times
+                if len(word_topic_sim_dict[i]) > 5:
+                    word_topic_sim[i] = torch.cat(word_topic_sim_dict[i], dim=0).mean(dim=0)
+                else:
+                    if i in latent_word_emb_dict:
+                        del latent_word_emb_dict[i]
+            word_topic_sim[self.filter_idx, :] = -1
+            topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
+            cur_idx = torch.randint(len(topic_sim_mat), (1,))
+            latent_word_emb_list = {}
+            id_list = []
+            for i in range(len(topic_sim_mat)):
+                sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+                _, top_idx = torch.topk(word_topic_sim[:, sort_idx], 3000)
+                topic_list = [latent_word_emb_dict[idx.item()] for idx in top_idx]
+                id_list.append(top_idx)
+                topic_tensor = torch.stack(topic_list, dim=0)
+                latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
+                topic_sim_mat[:, sort_idx] = -1
+                cur_idx = sort_idx
+
+                kmeans = KMeans(n_clusters=10, random_state=self.args.seed)
+                kmeans.fit(latent_word_emb_list[int(sort_idx)][1].numpy())
+                model.sub_topic_emb[int(sort_idx)].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
+
 
     # obtain topic discovery results and latent document embeddings for clustering
     def inference(self, topk=10, suffix=""):
@@ -160,8 +198,8 @@ class TopClusTrainer(object):
                     word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
                     if word_id.item() not in latent_word_emb_dict:
                         latent_word_emb_dict[word_id.item()] = latent_word_emb
-                # if b == 1:
-                #     break
+                if b == 1:
+                    break
                 b += 1
         # len: 30522     
         # print(len(self.vocab))
@@ -237,9 +275,9 @@ class TopClusTrainer(object):
         return targets
 
     # train model with three objectives
-    def clustering(self, epochs=20):
+    def clustering(self, epochs=20, is_hierarchical=False):
         self.pretrain(pretrain_epoch=self.args.pretrain_epoch)
-        self.cluster_init()
+        self.cluster_init(is_hierarchical)
         sampler = RandomSampler(self.data)
         dataset_loader = DataLoader(self.data, sampler=sampler, batch_size=self.batch_size)
         model = self.model.to(self.device)
@@ -258,7 +296,7 @@ class TopClusTrainer(object):
                 max_len = attention_mask.sum(-1).max().item()
                 input_ids, attention_mask, valid_pos = tuple(t[:, :max_len] for t in (input_ids, attention_mask, valid_pos))
 
-                doc_emb, input_embs, output_embs, rec_doc_emb, p_word = model(input_ids, attention_mask, valid_pos)
+                doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb = model(input_ids, attention_mask, valid_pos)
                 
                 rec_loss = F.mse_loss(output_embs, input_embs)          # Lpre for f, g
                 rec_doc_loss = F.mse_loss(rec_doc_emb, doc_emb)         # Lrec
@@ -268,6 +306,13 @@ class TopClusTrainer(object):
                 total_rec_loss += rec_loss.item()
                 total_clus_loss += clus_loss.item()
                 total_rec_doc_loss += rec_doc_loss.item()
+                
+                sub_targets = self.target_distribution(sub_p_word).detach() 
+                sub_clus_loss=F.kl_div(sub_p_word.log(), sub_targets, reduction='batchmean')
+                sub_rec_doc_loss = F.mse_loss(sub_rec_doc_emb, doc_emb)
+                loss += sub_clus_loss
+                loss += sub_rec_doc_loss*self.args.cluster_weight
+
                 loss.backward()
                 optimizer.step()
             # if (epoch+1) % 10 == 0 and self.args.do_inference:
@@ -296,6 +341,7 @@ if __name__ == '__main__':
     parser.add_argument('--do_inference', action='store_true')
     parser.add_argument('--cluster_weight', default=0.1, type=float, help='weight of clustering loss')
     parser.add_argument('--epochs', default=20, type=int, help='number of epochs for clustering')
+    parser.add_argument('--is_hierarchical', action='store_true')
 
     args = parser.parse_args()
     print(args)
@@ -307,6 +353,9 @@ if __name__ == '__main__':
     torch.backends.cudnn.benchmark = False
 
     trainer = TopClusTrainer(args)
+
+    if args.is_hierarchical:
+        trainer.clustering(epochs=args.epochs,is_hierarchical=True)
     
     if args.do_cluster:
         trainer.clustering(epochs=args.epochs)

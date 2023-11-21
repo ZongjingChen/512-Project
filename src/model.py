@@ -47,6 +47,7 @@ class TopClusModel(BertPreTrainedModel):
         super().__init__(config)
         self.init_weights()
         self.topic_emb = Parameter(torch.Tensor(n_clusters, hidden_dims[-1]))
+        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_clusters, hidden_dims[-1]))
         self.bert = BertModel(config, add_pooling_layer=False)
         self.ae = AutoEncoder(input_dim, hidden_dims)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -55,6 +56,8 @@ class TopClusModel(BertPreTrainedModel):
         self.kappa = kappa
         self.v = Parameter(torch.rand(config.hidden_size))
         torch.nn.init.xavier_normal_(self.topic_emb.data)
+        for s in self.sub_topic_emb:
+            torch.nn.init.xavier_normal_(s.data) 
         self.init_weights()
         for param in self.bert.parameters():
             param.requires_grad = False
@@ -62,6 +65,17 @@ class TopClusModel(BertPreTrainedModel):
     def cluster_assign(self, z):
         self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
         sim = torch.matmul(z, self.topic_emb.t()) * self.kappa
+        p = F.softmax(sim, dim=-1)
+        return p
+
+    # TODO: sub cluster assign
+    def subcluster_assign(self, z, topic_nums):
+        self.sub_topic_emb.data = F.normalize(self.sub_topic_emb.data, dim=-1)
+        # chosen_sub_topic_emb = self.sub_topic_emb[topic_nums]
+        
+        # sim = torch.matmul(z, self.sub_topic_emb.t()) * self.kappa
+        sim = [torch.matmul(x, self.sub_topic_emb[i].t()) * self.kappa for x, i in zip(z, topic_nums)]
+        sim = torch.stack(sim, dim=0)
         p = F.softmax(sim, dim=-1)
         return p
 
@@ -114,9 +128,20 @@ class TopClusModel(BertPreTrainedModel):
         _, z_doc = self.ae(doc_emb)
         p_doc = self.cluster_assign(z_doc)              # p(tk|z(d))
         p_word = self.cluster_assign(z_word)            # p(tk|zi(w))
+
+        topic_nums_p = torch.argmax(p_word, dim=1)
+        topic_nums_d = torch.argmax(p_doc, dim=1)
+        
+        sub_p_word = self.subcluster_assign(z_word, topic_nums_p)
+        sub_p_doc = self.subcluster_assign(z_doc, topic_nums_d)
+
         dec_topic = self.ae.decode(self.topic_emb)      # tk hat
+        dec_sub_topic = [self.ae.decode(s) for s in self.sub_topic_emb]
+
         rec_doc_emb = torch.matmul(p_doc, dec_topic)    # h(d) hat 
-        return avg_doc_emb, input_embs, output_embs, rec_doc_emb, p_word
+        sub_rec_doc_emb = torch.stack([torch.matmul(sub_p_doc, dec_sub_topic[i]) for i in topic_nums_d])
+
+        return avg_doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb
 
     def inference(self, input_ids, attention_mask):
         self.bert.eval()
