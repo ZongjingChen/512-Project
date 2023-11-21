@@ -79,9 +79,14 @@ class TopClusModel(BertPreTrainedModel):
         p = F.softmax(sim, dim=-1)
         return p
 
-    def topic_sim(self, z):
-        self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
-        sim = torch.matmul(z, self.topic_emb.t())
+    def topic_sim(self, z, sub=-1):
+        if sub == -1:
+            self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
+            sim = torch.matmul(z, self.topic_emb.t())
+        else:
+            self.sub_topic_emb[sub].data = F.normalize(self.sub_topic_emb.data, dim=-1)
+            sim = torch.matmul(z, self.sub_topic_emb[sub].t())
+        # self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
         return sim
 
     # return initialized latent word embeddings
@@ -145,7 +150,7 @@ class TopClusModel(BertPreTrainedModel):
         # print(dec_sub_topic[0].shape)
         return avg_doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb
 
-    def inference(self, input_ids, attention_mask):
+    def inference(self, input_ids, attention_mask, sub=-1):
         self.bert.eval()
         bert_outputs = self.bert(input_ids,
                                  attention_mask=attention_mask)
@@ -167,7 +172,11 @@ class TopClusModel(BertPreTrainedModel):
         valid_word_ids = input_ids[~attn_mask]
         # shape: (x, 100) - x valid words in latent space, x < 32 * 512
         _, z_word = self.ae(valid_word_embs)
-        sim = self.topic_sim(z_word)
+
+        if sub == -1:
+            sim = self.topic_sim(z_word)
+        else:
+            sim = self.topic_sim(z_word, sub=sub)
 
         # shape (32, 100) - 32 docs in latent space
         _, z_doc = self.ae(doc_emb)
