@@ -100,7 +100,7 @@ class TopClusTrainer(object):
         model = self.model.to(self.device)
         if os.path.exists(latent_emb_path) and os.path.exists(latent_emb_path):
             print(f"Loading initial latent embeddings from {latent_emb_path}")
-            latent_embs, freq = torch.load(latent_emb_path, map_location=self.device)
+            latent_embs, freq = torch.load(latent_emb_path)
         else:
             sampler = SequentialSampler(self.data)
             dataset_loader = DataLoader(self.data, sampler=sampler, batch_size=self.batch_size)
@@ -127,7 +127,8 @@ class TopClusTrainer(object):
         print(f"Running K-Means for initialization")
         kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed)
         kmeans.fit(latent_embs.numpy(), sample_weight=freq.numpy())
-        model.topic_emb.data = torch.tensor(kmeans.cluster_centers_).to(self.device)
+        model.topic_emb.data = torch.tensor(kmeans.cluster_centers_).to("cpu")
+        
         # save topic_emb
         # topic_emb_path = os.path.join(self.res_dir, "topic_emb.pt")
         # print(f"Saving topic embeddings to {topic_emb_path}")
@@ -140,37 +141,18 @@ class TopClusTrainer(object):
             # latent_embs, input_ids, sim
             latent_word_emb_dict = {}
             word_topic_sim_dict = defaultdict(list)
-            for latent_word_emb, word_id, s in zip(latent_embs, input_ids, sim):
-                word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
-                if word_id.item() not in latent_word_emb_dict:
-                    latent_word_emb_dict[word_id.item()] = latent_word_emb
-            word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters))
-            for i in range(len(word_topic_sim)):
-                # if the word appears in all the documents more than 5 times
-                if len(word_topic_sim_dict[i]) > 5:
-                    word_topic_sim[i] = torch.cat(word_topic_sim_dict[i], dim=0).mean(dim=0)
-                else:
-                    if i in latent_word_emb_dict:
-                        del latent_word_emb_dict[i]
-            word_topic_sim[self.filter_idx, :] = -1
-            topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
-            cur_idx = torch.randint(len(topic_sim_mat), (1,))
-            latent_word_emb_list = {}
-            id_list = []
-            for i in range(len(topic_sim_mat)):
-                sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
-                _, top_idx = torch.topk(word_topic_sim[:, sort_idx], 3000)
-                topic_list = [latent_word_emb_dict[idx.item()] for idx in top_idx]
-                id_list.append(top_idx)
-                topic_tensor = torch.stack(topic_list, dim=0)
-                latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
-                topic_sim_mat[:, sort_idx] = -1
-                cur_idx = sort_idx
-
+            print(latent_embs.shape)
+            print(self.input_ids.shape)
+            # print(valid_ids.shape)
+            for i in range(10):
+                _, top_idx = torch.topk(sim[:,i], 3000)
+                top_idx = torch.tensor(top_idx)
+                latent_embs[top_idx]
                 kmeans = KMeans(n_clusters=10, random_state=self.args.seed)
-                kmeans.fit(latent_word_emb_list[int(sort_idx)][1].numpy())
-                model.sub_topic_emb[int(sort_idx)].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
+                kmeans.fit(latent_embs[top_idx].numpy())
+                model.sub_topic_emb[i].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
 
+        model.topic_emb.data = model.topic_emb.data.to(self.device)
 
     # obtain topic discovery results and latent document embeddings for clustering
     def inference(self, topk=10, suffix=""):
