@@ -139,8 +139,10 @@ class TopClusModel(BertPreTrainedModel):
         dec_sub_topic = [self.ae.decode(s) for s in self.sub_topic_emb]
 
         rec_doc_emb = torch.matmul(p_doc, dec_topic)    # h(d) hat 
-        sub_rec_doc_emb = torch.stack([torch.matmul(sub_p_doc, dec_sub_topic[i]) for i in topic_nums_d])
-
+        sub_rec_doc_emb = torch.stack([torch.matmul(sub_p_doc[i], dec_sub_topic[i]) for i in topic_nums_d])
+        # print('===============================')
+        # print(sub_p_doc.shape)
+        # print(dec_sub_topic[0].shape)
         return avg_doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb
 
     def inference(self, input_ids, attention_mask):
