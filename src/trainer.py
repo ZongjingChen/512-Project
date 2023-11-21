@@ -142,7 +142,7 @@ class TopClusTrainer(object):
             latent_word_emb_dict = {}
             word_topic_sim_dict = defaultdict(list)
             print(latent_embs.shape)
-            print(self.input_ids.shape)
+            # print(self.input_ids.shape)
             # print(valid_ids.shape)
             for i in range(10):
                 _, top_idx = torch.topk(sim[:,i], 3000)
@@ -151,6 +151,7 @@ class TopClusTrainer(object):
                 kmeans = KMeans(n_clusters=10, random_state=self.args.seed)
                 kmeans.fit(latent_embs[top_idx].numpy())
                 model.sub_topic_emb[i].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
+            print(model.sub_topic_emb.data)
 
         model.topic_emb.data = model.topic_emb.data.to(self.device)
 
@@ -269,6 +270,9 @@ class TopClusTrainer(object):
             total_rec_loss = 0
             total_rec_doc_loss = 0
             total_clus_loss = 0
+            total_sub_rec_doc_loss = 0
+            total_sub_clus_loss = 0
+
             for batch_idx, batch in enumerate(tqdm(dataset_loader, desc=f"Clustering epoch {epoch+1}/{epochs}")):
                 optimizer.zero_grad()
                 # shape: (32, 512)
@@ -292,6 +296,9 @@ class TopClusTrainer(object):
                 sub_targets = self.target_distribution(sub_p_word).detach() 
                 sub_clus_loss=F.kl_div(sub_p_word.log(), sub_targets, reduction='batchmean')
                 sub_rec_doc_loss = F.mse_loss(sub_rec_doc_emb, doc_emb)
+                total_sub_rec_doc_loss += sub_rec_doc_loss.item()
+                total_sub_clus_loss += sub_clus_loss.item()
+
                 loss += sub_clus_loss
                 loss += sub_rec_doc_loss*self.args.cluster_weight
 
@@ -299,7 +306,7 @@ class TopClusTrainer(object):
                 optimizer.step()
             # if (epoch+1) % 10 == 0 and self.args.do_inference:
             #     self.inference(topk=self.args.k, suffix=f"_{epoch}")
-            print(f"epoch {epoch+1}: rec_loss = {total_rec_loss / (batch_idx+1):.4f}; rec_doc_loss = {total_rec_doc_loss / (batch_idx+1):.4f}; cluster_loss = {total_clus_loss / (batch_idx+1):.4f}")
+            print(f"epoch {epoch+1}: rec_loss = {total_rec_loss / (batch_idx+1):.4f}; rec_doc_loss = {total_rec_doc_loss / (batch_idx+1):.4f}; cluster_loss = {total_clus_loss / (batch_idx+1):.4f}; sub_rec_doc_loss = {total_sub_rec_doc_loss / (batch_idx+1):.4f}; sub_cluster_loss = {total_sub_clus_loss / (batch_idx+1):.4f};")
 
         model_path = os.path.join(self.data_dir, "model.pt")
         torch.save(model.state_dict(), model_path)
@@ -339,8 +346,8 @@ if __name__ == '__main__':
     if args.is_hierarchical:
         trainer.clustering(epochs=args.epochs,is_hierarchical=True)
     
-    if args.do_cluster:
-        trainer.clustering(epochs=args.epochs)
+    # if args.do_cluster:
+    #     trainer.clustering(epochs=args.epochs)
     if args.do_inference:
         model_path = os.path.join("datasets", args.dataset, "model.pt")
         try:
