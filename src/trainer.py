@@ -250,6 +250,55 @@ class TopClusTrainer(object):
 
         
         return 
+    
+    def sub_inference(self, topk=10, suffix=""):
+        sampler = SequentialSampler(self.data)
+        dataset_loader = DataLoader(self.data, sampler=sampler, batch_size=self.batch_size)
+        model = self.model.to(self.device)
+        model.eval()
+        latent_doc_embs = []
+        b = 0
+        for j in range(10):
+            word_topic_sim_dict = defaultdict(list)
+            with torch.no_grad():
+                for batch in tqdm(dataset_loader, desc=f"Inference_{j}"):
+                    # shape: (32,512)
+                    input_ids = batch[0].to(self.device)
+                    attention_mask = batch[1].to(self.device)
+                    max_len = attention_mask.sum(-1).max().item()
+                    input_ids, attention_mask = tuple(t[:, :max_len] for t in (input_ids, attention_mask))
+                    # print(input_ids.shape)
+                    # print(input_ids)
+                    latent_doc_emb, latent_word_embs, word_ids, sim = model.inference(input_ids, attention_mask, sub=j)
+                    # latent_doc_embs.append(latent_doc_emb.detach().cpu())
+                    for word_id, s in zip(word_ids, sim):
+                        word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
+                    # if b == 1:
+                    #     break
+                    b += 1
+            word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters))
+            for i in range(len(word_topic_sim)):
+                # if the word appears in all the documents more than 5 times
+                if len(word_topic_sim_dict[i]) > 5:
+                    word_topic_sim[i] = torch.cat(word_topic_sim_dict[i], dim=0).mean(dim=0)
+            word_topic_sim[self.filter_idx, :] = -1
+
+            topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
+            # print(topic_sim_mat)
+            cur_idx = torch.randint(len(topic_sim_mat), (1,))
+            topic_file = open(os.path.join(self.res_dir, f"topics_sub_{j}.txt"), "w")
+            for i in range(len(topic_sim_mat)):
+                sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+                # print(sort_idx, cur_idx)
+                _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
+                result_string = []
+                for idx in top_idx:
+                    result_string.append(f"{self.inv_vocab[idx.item()]}")
+                
+                topic_file.write(f"Topic{j}_{i}: {','.join(result_string)}\n")
+                topic_sim_mat[:, sort_idx] = -1
+                cur_idx = sort_idx
+        return 
 
     # compute target distribution for distinctive topic clustering
     def target_distribution(self, preds):
