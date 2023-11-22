@@ -13,7 +13,7 @@ class AutoEncoder(nn.Module):
         dims = [input_dim] + hidden_dims
         for i in range(len(dims) - 1):
             if i < len(dims) - 2:
-                layer = nn.Sequential(nn.Linear(dims[i], dims[i]), nn.ReLU())
+                layer = nn.Sequential(nn.Linear(dims[i], dims[i + 1]), nn.ReLU())
             else:
                 layer = nn.Linear(dims[i], dims[i+1])
             self.encoder_layers.append(layer)
@@ -47,7 +47,7 @@ class TopClusModel(BertPreTrainedModel):
         super().__init__(config)
         self.init_weights()
         self.topic_emb = Parameter(torch.Tensor(n_clusters, hidden_dims[-1]))
-        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_clusters + 1, hidden_dims[-1]))
+        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_clusters, hidden_dims[-1]))
         self.bert = BertModel(config, add_pooling_layer=False)
         self.ae = AutoEncoder(input_dim, hidden_dims)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)

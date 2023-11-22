@@ -151,7 +151,7 @@ class TopClusTrainer(object):
                 kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed)
                 kmeans.fit(latent_embs[top_idx].numpy(), sample_weight=freq[top_idx].numpy())
                 model.sub_topic_emb[i].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
-            print(model.sub_topic_emb.data)
+            # print(model.sub_topic_emb.data)
 
         model.topic_emb.data = model.topic_emb.data.to(self.device)
 
