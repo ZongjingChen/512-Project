@@ -13,7 +13,7 @@ class AutoEncoder(nn.Module):
         dims = [input_dim] + hidden_dims
         for i in range(len(dims) - 1):
             if i < len(dims) - 2:
-                layer = nn.Sequential(nn.Linear(dims[i], dims[i+1]), nn.ReLU())
+                layer = nn.Sequential(nn.Linear(dims[i], dims[i]), nn.ReLU())
             else:
                 layer = nn.Linear(dims[i], dims[i+1])
             self.encoder_layers.append(layer)
@@ -47,7 +47,7 @@ class TopClusModel(BertPreTrainedModel):
         super().__init__(config)
         self.init_weights()
         self.topic_emb = Parameter(torch.Tensor(n_clusters, hidden_dims[-1]))
-        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_clusters, hidden_dims[-1]))
+        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_clusters + 1, hidden_dims[-1]))
         self.bert = BertModel(config, add_pooling_layer=False)
         self.ae = AutoEncoder(input_dim, hidden_dims)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -69,15 +69,20 @@ class TopClusModel(BertPreTrainedModel):
         return p
 
     # TODO: sub cluster assign
-    def subcluster_assign(self, z, topic_nums):
+    def subcluster_assign(self, z, p):
         self.sub_topic_emb.data = F.normalize(self.sub_topic_emb.data, dim=-1)
+        # print('sub topic emb shape: ', self.sub_topic_emb.shape)
         # chosen_sub_topic_emb = self.sub_topic_emb[topic_nums]
-        
-        # sim = torch.matmul(z, self.sub_topic_emb.t()) * self.kappa
-        sim = [torch.matmul(x, self.sub_topic_emb[i].t()) * self.kappa for x, i in zip(z, topic_nums)]
-        sim = torch.stack(sim, dim=0)
+        sub_sim = torch.matmul(self.sub_topic_emb, z.t()).transpose(0, 2)
+        # print('sub sim shape: ', sub_sim.shape)
+        p = p.unsqueeze(2)
+        # print('p shape: ', p.shape)
+        sim = (torch.matmul(sub_sim, p)*self.kappa).squeeze(2)
+        # print('sim shape: ', sim.shape)
+
         p = F.softmax(sim, dim=-1)
         return p
+    
 
     def topic_sim(self, z, sub=-1):
         if sub == -1:
@@ -134,17 +139,28 @@ class TopClusModel(BertPreTrainedModel):
         p_doc = self.cluster_assign(z_doc)              # p(tk|z(d))
         p_word = self.cluster_assign(z_word)            # p(tk|zi(w))
 
-        topic_nums_p = torch.argmax(p_word, dim=1)
+        # topic_nums_p = torch.argmax(p_word, dim=1)
         topic_nums_d = torch.argmax(p_doc, dim=1)
         
-        sub_p_word = self.subcluster_assign(z_word, topic_nums_p)
-        sub_p_doc = self.subcluster_assign(z_doc, topic_nums_d)
+        sub_p_word = self.subcluster_assign(z_word, p_word)
+        sub_p_doc = self.subcluster_assign(z_doc, p_doc).t()
 
         dec_topic = self.ae.decode(self.topic_emb)      # tk hat
-        dec_sub_topic = [self.ae.decode(s) for s in self.sub_topic_emb]
+        dec_sub_topic = torch.stack([self.ae.decode(s) for s in self.sub_topic_emb]).transpose(1, 2)
+        # print('dec sub topic shape: ', dec_sub_topic.shape)
+        # print(sub_p_doc.shape)
+
 
         rec_doc_emb = torch.matmul(p_doc, dec_topic)    # h(d) hat 
-        sub_rec_doc_emb = torch.stack([torch.matmul(sub_p_doc[i], dec_sub_topic[i]) for i in topic_nums_d])
+        # sub_rec_doc_emb = torch.stack([torch.matmul(sub_p_doc[i], dec_sub_topic[i]) for i in topic_nums_d])
+        sub_rec_doc_emb = torch.matmul(dec_sub_topic, sub_p_doc).transpose(0, 2)
+        # print('sub sim shape: ', sub_sim.shape)
+        # print('sub rec doc emb shape: ', sub_rec_doc_emb.shape)
+        p_doc = p_doc.unsqueeze(2)
+        # print('p doc shape: ', p_doc.shape)
+        sub_rec_doc_emb = torch.matmul(sub_rec_doc_emb, p_doc).squeeze(2)
+        # print('sub rec doc emb shape: ', sub_rec_doc_emb.shape)
+        
         # print('===============================')
         # print(sub_p_doc.shape)
         # print(dec_sub_topic[0].shape)

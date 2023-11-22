@@ -147,9 +147,9 @@ class TopClusTrainer(object):
             for i in range(10):
                 _, top_idx = torch.topk(sim[:,i], 3000)
                 top_idx = torch.tensor(top_idx)
-                latent_embs[top_idx]
-                kmeans = KMeans(n_clusters=10, random_state=self.args.seed)
-                kmeans.fit(latent_embs[top_idx].numpy())
+                # latent_embs[top_idx]
+                kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed)
+                kmeans.fit(latent_embs[top_idx].numpy(), sample_weight=freq[top_idx].numpy())
                 model.sub_topic_emb[i].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
             print(model.sub_topic_emb.data)
 
@@ -181,8 +181,8 @@ class TopClusTrainer(object):
                     word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
                     if word_id.item() not in latent_word_emb_dict:
                         latent_word_emb_dict[word_id.item()] = latent_word_emb
-                if b == 1:
-                    break
+                # if b == 1:
+                #     break
                 b += 1
         # len: 30522     
         # print(len(self.vocab))
@@ -215,7 +215,7 @@ class TopClusTrainer(object):
             id_list.append(top_idx)
             topic_tensor = torch.stack(topic_list, dim=0)
             latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
-            topic_file.write(f"Topic {i}: {','.join(result_string)}\n")
+            topic_file.write(f"Topic {sort_idx}: {','.join(result_string)}\n")
             topic_sim_mat[:, sort_idx] = -1
             cur_idx = sort_idx
 
@@ -247,8 +247,6 @@ class TopClusTrainer(object):
         print(f'Saving word id list to {word_id_path}')
         # shape (100, k, 100) - 100 topics, each topic has k word embeddings, each word embedding ias 100 dimension
         # print(latent_word_clusters.shape)
-
-        
         return 
     
     def sub_inference(self, topk=10, suffix=""):
@@ -295,7 +293,7 @@ class TopClusTrainer(object):
                 for idx in top_idx:
                     result_string.append(f"{self.inv_vocab[idx.item()]}")
                 
-                topic_file.write(f"Topic{j}_{i}: {','.join(result_string)}\n")
+                topic_file.write(f"Topic{j}_{sort_idx}: {','.join(result_string)}\n")
                 topic_sim_mat[:, sort_idx] = -1
                 cur_idx = sort_idx
         return 
@@ -357,7 +355,7 @@ class TopClusTrainer(object):
             #     self.inference(topk=self.args.k, suffix=f"_{epoch}")
             print(f"epoch {epoch+1}: rec_loss = {total_rec_loss / (batch_idx+1):.4f}; rec_doc_loss = {total_rec_doc_loss / (batch_idx+1):.4f}; cluster_loss = {total_clus_loss / (batch_idx+1):.4f}; sub_rec_doc_loss = {total_sub_rec_doc_loss / (batch_idx+1):.4f}; sub_cluster_loss = {total_sub_clus_loss / (batch_idx+1):.4f};")
 
-        model_path = os.path.join(self.data_dir, "model.pt")
+        model_path = os.path.join(self.data_dir, "sub_model.pt")
         torch.save(model.state_dict(), model_path)
         print(f"model saved to {model_path}")
 
@@ -398,10 +396,15 @@ if __name__ == '__main__':
     # if args.do_cluster:
     #     trainer.clustering(epochs=args.epochs)
     if args.do_inference:
-        model_path = os.path.join("datasets", args.dataset, "model.pt")
+        model_path = os.path.join("datasets", args.dataset, "sub_model.pt")
+        # model_path = os.path.join("datasets", args.dataset, "model.pt")
         try:
             trainer.model.load_state_dict(torch.load(model_path, map_location=trainer.device))
-        except:
+        except Exception as e:
+            print(e)
             print("No model found! Run clustering first!")
             exit(-1)
-        trainer.inference(topk=args.k, suffix=f"_final")
+        trainer.inference(topk=args.k)
+        trainer.sub_inference(topk=args.k)
+        # trainer.inference(topk=args.k, suffix=f"_original")
+        # trainer.inference(topk=args.k, suffix=f"_final")
