@@ -13,6 +13,7 @@ import argparse
 from sklearn.cluster import KMeans
 from utils import TopClusUtils
 import numpy as np
+from utils import dimension_reduction
 
 
 class TopClusTrainer(object):
@@ -199,7 +200,7 @@ class TopClusTrainer(object):
             cur_idx = sort_idx
 
         latent_word_emb_list=sorted(latent_word_emb_list.items())
-        print(latent_word_emb_list[0])
+        # print(latent_word_emb_list[0])
         word_id_list = []
         word_emb_list = []
         for i in range(len(latent_word_emb_list)):
@@ -278,6 +279,54 @@ class TopClusTrainer(object):
         torch.save(model.state_dict(), model_path)
         print(f"model saved to {model_path}")
 
+    def sub_kMeans(self):
+        cluster_ids = torch.load("./results_yelp/latent_word_cluster_id.pt", map_location=self.device)
+        cluster_emb = torch.load("./results_yelp/latent_word_clusters_emb.pt", map_location=self.device)
+        print("load data successfully")
+        topic_emb = self.model.topic_emb
+        # print(self.model.topic_emb.shape)
+        # torch.Size([100, 100])
+        # print(cluster_ids.shape)
+        # torch.Size([100, 10])
+        # print(cluster_emb.shape)
+        # torch.Size([100, 10, 100])
+        sub_topic_emb = []
+        redu_cluster_emb = []
+        for i in range(len(topic_emb)):
+            redu_cluster_emb.append(dimension_reduction(topic_emb[i].detach().cpu(),cluster_emb[i].cpu()))
+            kmeans = KMeans(n_clusters=10, random_state=self.args.seed)
+            print("++++++++++++++++++")
+            kmeans.fit(redu_cluster_emb[i].numpy())
+            sub_topic_emb.append(torch.tensor(kmeans.cluster_centers_).to(self.device))
+        sub_topic_emb = torch.stack(sub_topic_emb, dim=0).to(self.device)
+        redu_cluster_emb = torch.stack(redu_cluster_emb, dim=0).to(self.device)
+        # print(sub_topic_emb.shape)
+        # torch.Size([100, 3, 99])
+        # print(redu_cluster_emb.shape)
+        # torch.Size([100, 10, 99])
+
+        topic_file = open(os.path.join(self.res_dir, f"sub_topics_Kmeans_10.txt"), "w")
+        # calculate the sim between the sub_topic_emb and the redu_cluster_emb
+        for i in range(len(topic_emb)):
+            normalized_sub_topic_emb = F.normalize(sub_topic_emb[i], dim=-1)
+            # torch.Size([3, 99])
+            normalized_redu_cluster_emb = F.normalize(redu_cluster_emb[i], dim=-1)
+            # torch.Size([10, 99])
+            sim = torch.matmul(normalized_redu_cluster_emb, normalized_sub_topic_emb.t())
+            # torch.Size([10,3])
+            for j in range(len(normalized_sub_topic_emb)):
+                _, top_idx = torch.topk(sim[:,j],10)
+                top_idx = torch.tensor(top_idx)
+                id_list = cluster_ids[i][top_idx]
+                result_string = []
+                for idx in id_list:
+                    result_string.append(f"{self.inv_vocab[idx.item()]}")
+                topic_file.write(f"Topic {i}_{j}: {','.join(result_string)}\n")
+        return 
+
+
+
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -307,14 +356,16 @@ if __name__ == '__main__':
     torch.backends.cudnn.benchmark = False
 
     trainer = TopClusTrainer(args)
+
+    trainer.sub_kMeans()
     
-    if args.do_cluster:
-        trainer.clustering(epochs=args.epochs)
-    if args.do_inference:
-        model_path = os.path.join("datasets", args.dataset, "model.pt")
-        try:
-            trainer.model.load_state_dict(torch.load(model_path, map_location=trainer.device))
-        except:
-            print("No model found! Run clustering first!")
-            exit(-1)
-        trainer.inference(topk=args.k, suffix=f"_final")
+    # if args.do_cluster:
+    #     trainer.clustering(epochs=args.epochs)
+    # if args.do_inference:
+    #     model_path = os.path.join("datasets", args.dataset, "model_10.pt")
+    #     try:
+    #         trainer.model.load_state_dict(torch.load(model_path, map_location=trainer.device))
+    #     except:
+    #         print("No model found! Run clustering first!")
+    #         exit(-1)
+    #     trainer.inference(topk=args.k, suffix=f"_final")
