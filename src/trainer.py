@@ -319,6 +319,7 @@ class TopClusTrainer(object):
             total_clus_loss = 0
             total_sub_rec_doc_loss = 0
             total_sub_clus_loss = 0
+            total_sub_topic_loss = 0
 
             for batch_idx, batch in enumerate(tqdm(dataset_loader, desc=f"Clustering epoch {epoch+1}/{epochs}")):
                 optimizer.zero_grad()
@@ -348,12 +349,28 @@ class TopClusTrainer(object):
 
                 loss += sub_clus_loss
                 loss += sub_rec_doc_loss*self.args.cluster_weight
+                # control the concentration of subtopic
+                concentration = 0.8
 
+                # model.topic_emb.data = F.normalize(model.topic_emb.data, dim=-1)
+                topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t()) * concentration
+                sub_topic_sim_mat = torch.matmul(model.sub_topic_emb, model.topic_emb.t())
+
+                sub_topic_loss = sum([F.mse_loss(sub_topic_sim_mat[i][j], topic_sim_mat[i]) / self.n_clusters for i in range(len(sub_topic_sim_mat)) for j in range(len(sub_topic_sim_mat[i]))])
+
+                total_sub_topic_loss += sub_topic_loss.item()
+                # print(total_sub_topic_loss)
+                # for i in range(len(sub_topic_sim_mat)):
+                #     for j in range(len(sub_topic_sim_mat[i])):
+                #         sub_topic_loss = F.mse_loss(sub_topic_sim_mat[i][j], topic_sim_mat[i]) / self.n_clusters
+                #         print(sub_topic_loss)
+                #         loss += sub_topic_loss
+                loss += sub_topic_loss
                 loss.backward()
                 optimizer.step()
             # if (epoch+1) % 10 == 0 and self.args.do_inference:
             #     self.inference(topk=self.args.k, suffix=f"_{epoch}")
-            print(f"epoch {epoch+1}: rec_loss = {total_rec_loss / (batch_idx+1):.4f}; rec_doc_loss = {total_rec_doc_loss / (batch_idx+1):.4f}; cluster_loss = {total_clus_loss / (batch_idx+1):.4f}; sub_rec_doc_loss = {total_sub_rec_doc_loss / (batch_idx+1):.4f}; sub_cluster_loss = {total_sub_clus_loss / (batch_idx+1):.4f};")
+            print(f"epoch {epoch+1}: rec_loss = {total_rec_loss / (batch_idx+1):.4f}; rec_doc_loss = {total_rec_doc_loss / (batch_idx+1):.4f}; cluster_loss = {total_clus_loss / (batch_idx+1):.4f}; sub_rec_doc_loss = {total_sub_rec_doc_loss / (batch_idx+1):.4f}; sub_cluster_loss = {total_sub_clus_loss / (batch_idx+1):.4f}; sub_topic_loss = {total_sub_topic_loss / (batch_idx+1):.4f}")
 
         model_path = os.path.join(self.data_dir, "sub_model.pt")
         torch.save(model.state_dict(), model_path)
