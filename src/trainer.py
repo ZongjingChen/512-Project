@@ -195,7 +195,7 @@ class TopClusTrainer(object):
             id_list.append(top_idx)
             topic_tensor = torch.stack(topic_list, dim=0)
             latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
-            topic_file.write(f"Topic {i}: {','.join(result_string)}\n")
+            topic_file.write(f"Topic {int(sort_idx)}: {','.join(result_string)}\n")
             topic_sim_mat[:, sort_idx] = -1
             cur_idx = sort_idx
 
@@ -292,36 +292,53 @@ class TopClusTrainer(object):
         # torch.Size([100, 10, 100])
         sub_topic_emb = []
         redu_cluster_emb = []
-        for i in range(len(topic_emb)):
+        ori_sub_topic_emb = []
+        for i in tqdm(range(len(topic_emb)), desc="Reduction"):
             redu_cluster_emb.append(dimension_reduction(topic_emb[i].detach().cpu(),cluster_emb[i].cpu()))
-            kmeans = KMeans(n_clusters=10, random_state=self.args.seed)
-            print("++++++++++++++++++")
+            kmeans = KMeans(n_clusters=10, random_state=self.args.seed, n_init=10)
+            kmeans2 = KMeans(n_clusters=10, random_state=self.args.seed, n_init=10)
             kmeans.fit(redu_cluster_emb[i].numpy())
             sub_topic_emb.append(torch.tensor(kmeans.cluster_centers_).to(self.device))
+            kmeans2.fit(cluster_emb[i].detach().cpu().numpy())
+            ori_sub_topic_emb.append(torch.tensor(kmeans2.cluster_centers_).to(self.device))
         sub_topic_emb = torch.stack(sub_topic_emb, dim=0).to(self.device)
         redu_cluster_emb = torch.stack(redu_cluster_emb, dim=0).to(self.device)
+        ori_sub_topic_emb = torch.stack(ori_sub_topic_emb, dim=0).to(self.device)
         # print(sub_topic_emb.shape)
         # torch.Size([100, 3, 99])
         # print(redu_cluster_emb.shape)
         # torch.Size([100, 10, 99])
 
-        topic_file = open(os.path.join(self.res_dir, f"sub_topics_Kmeans_10.txt"), "w")
+        topic_file = open(os.path.join(self.res_dir, f"sub_topics_Kmeans_10_comparison.txt"), "w")
+        ori_topic_file = open(os.path.join(self.res_dir, f"ori_sub_topics_Kmeans_10_comparison.txt"), "w")
         # calculate the sim between the sub_topic_emb and the redu_cluster_emb
-        for i in range(len(topic_emb)):
+        for i in tqdm(range(len(topic_emb)), desc="Inference"):
             normalized_sub_topic_emb = F.normalize(sub_topic_emb[i], dim=-1)
             # torch.Size([3, 99])
             normalized_redu_cluster_emb = F.normalize(redu_cluster_emb[i], dim=-1)
             # torch.Size([10, 99])
+            normalized_ori_sub_topic_emb = F.normalize(ori_sub_topic_emb[i], dim=-1)
+            normalized_ori_cluster_emb = F.normalize(cluster_emb[i], dim=-1)
             sim = torch.matmul(normalized_redu_cluster_emb, normalized_sub_topic_emb.t())
+            ori_sim = torch.matmul(normalized_ori_cluster_emb, normalized_ori_sub_topic_emb.t())
             # torch.Size([10,3])
             for j in range(len(normalized_sub_topic_emb)):
-                _, top_idx = torch.topk(sim[:,j],10)
+                _, top_idx = torch.topk(sim[:,j], 5)
                 top_idx = torch.tensor(top_idx)
                 id_list = cluster_ids[i][top_idx]
                 result_string = []
                 for idx in id_list:
                     result_string.append(f"{self.inv_vocab[idx.item()]}")
                 topic_file.write(f"Topic {i}_{j}: {','.join(result_string)}\n")
+
+            for j in range(len(normalized_ori_sub_topic_emb)):
+                _, top_idx = torch.topk(ori_sim[:,j], 5)
+                top_idx = torch.tensor(top_idx)
+                id_list = cluster_ids[i][top_idx]
+                result_string = []
+                for idx in id_list:
+                    result_string.append(f"{self.inv_vocab[idx.item()]}")
+                ori_topic_file.write(f"Topic {i}_{j}: {','.join(result_string)}\n")
         return 
 
 
@@ -362,7 +379,7 @@ if __name__ == '__main__':
     # if args.do_cluster:
     #     trainer.clustering(epochs=args.epochs)
     # if args.do_inference:
-    #     model_path = os.path.join("datasets", args.dataset, "model_10.pt")
+    #     model_path = os.path.join("datasets", args.dataset, "model_100.pt")
     #     try:
     #         trainer.model.load_state_dict(torch.load(model_path, map_location=trainer.device))
     #     except:
