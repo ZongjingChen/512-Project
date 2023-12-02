@@ -1,5 +1,6 @@
 from collections import defaultdict
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 from torch.utils.data import TensorDataset, DataLoader, SequentialSampler, RandomSampler
@@ -330,7 +331,7 @@ class TopClusTrainer(object):
                 max_len = attention_mask.sum(-1).max().item()
                 input_ids, attention_mask, valid_pos = tuple(t[:, :max_len] for t in (input_ids, attention_mask, valid_pos))
 
-                doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb = model(input_ids, attention_mask, valid_pos)
+                doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb, p_subtopic = model(input_ids, attention_mask, valid_pos)
                 
                 rec_loss = F.mse_loss(output_embs, input_embs)          # Lpre for f, g
                 rec_doc_loss = F.mse_loss(rec_doc_emb, doc_emb)         # Lrec
@@ -349,23 +350,35 @@ class TopClusTrainer(object):
 
                 loss += sub_clus_loss
                 loss += sub_rec_doc_loss*self.args.cluster_weight
-                # control the concentration of subtopic
-                concentration = 0.8
 
-                # model.topic_emb.data = F.normalize(model.topic_emb.data, dim=-1)
-                topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t()) * concentration
-                sub_topic_sim_mat = torch.matmul(model.sub_topic_emb, model.topic_emb.t())
+                # # control the concentration of subtopic
+                # concentration = 0.8
 
-                sub_topic_loss = sum([F.mse_loss(sub_topic_sim_mat[i][j], topic_sim_mat[i]) / self.n_clusters for i in range(len(sub_topic_sim_mat)) for j in range(len(sub_topic_sim_mat[i]))])
+                # # model.topic_emb.data = F.normalize(model.topic_emb.data, dim=-1)
+                # topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t()) * concentration
+                # sub_topic_sim_mat = torch.matmul(model.sub_topic_emb, model.topic_emb.t())
 
-                total_sub_topic_loss += sub_topic_loss.item()
+                # sub_topic_loss = sum([F.mse_loss(sub_topic_sim_mat[i][j], topic_sim_mat[i]) / self.n_clusters for i in range(len(sub_topic_sim_mat)) for j in range(len(sub_topic_sim_mat[i]))])
+
+                # total_sub_topic_loss += sub_topic_loss.item()
+                loss_function = nn.CrossEntropyLoss()
+                label_list = []
+                for i in range(self.n_clusters * self.n_clusters):
+                    label_list.append(i//self.n_clusters)
+                true_labels = torch.tensor(label_list)
+                sub_top_loss = loss_function(p_subtopic, true_labels)
+                loss += sub_top_loss
+                total_sub_topic_loss += sub_top_loss.item()
+
                 # print(total_sub_topic_loss)
                 # for i in range(len(sub_topic_sim_mat)):
                 #     for j in range(len(sub_topic_sim_mat[i])):
                 #         sub_topic_loss = F.mse_loss(sub_topic_sim_mat[i][j], topic_sim_mat[i]) / self.n_clusters
                 #         print(sub_topic_loss)
                 #         loss += sub_topic_loss
-                loss += sub_topic_loss
+                # loss += sub_topic_loss
+
+
                 loss.backward()
                 optimizer.step()
             # if (epoch+1) % 10 == 0 and self.args.do_inference:
