@@ -43,11 +43,11 @@ class AutoEncoder(nn.Module):
 
 class TopClusModel(BertPreTrainedModel):
 
-    def __init__(self, config, input_dim, hidden_dims, n_clusters, kappa):
+    def __init__(self, config, input_dim, hidden_dims, n_clusters, n_sub_clusters, kappa):
         super().__init__(config)
         self.init_weights()
         self.topic_emb = Parameter(torch.Tensor(n_clusters, hidden_dims[-1]))
-        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_clusters, hidden_dims[-1]))
+        self.sub_topic_emb = Parameter(torch.Tensor(n_clusters, n_sub_clusters, hidden_dims[-1]))
         self.bert = BertModel(config, add_pooling_layer=False)
         self.ae = AutoEncoder(input_dim, hidden_dims)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -91,19 +91,22 @@ class TopClusModel(BertPreTrainedModel):
         sub_topic_emb = self.sub_topic_emb.view(-1, self.sub_topic_emb.shape[-1])
         # print("sub topic emb shape:", sub_topic_emb.shape)
 
-        sim = torch.matmul(z, sub_topic_emb.t()) * self.kappa
+        sim = torch.matmul(z.detach(), sub_topic_emb.t()) * self.kappa
         p = F.softmax(sim, dim=-1)
         # print("p shape:", p.shape)
         return p
 
 
-    def topic_sim(self, z, sub=-1):
-        if sub == -1:
+    def topic_sim(self, z, sub=False):
+        if not sub:
             self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
             sim = torch.matmul(z, self.topic_emb.t())
         else:
-            self.sub_topic_emb[sub].data = F.normalize(self.sub_topic_emb.data, dim=-1)
-            sim = torch.matmul(z, self.sub_topic_emb[sub].t())
+            # self.sub_topic_emb.data = F.normalize(self.sub_topic_emb.data, dim=-1)
+            self.sub_topic_emb.data = F.normalize(self.sub_topic_emb.data, dim=-1)
+            sub_topic_emb = self.sub_topic_emb.view(-1, self.sub_topic_emb.shape[-1])
+            # print('sub topic emb shape: ', sub_topic_emb.shape)
+            sim = torch.matmul(z, sub_topic_emb.t())
         # self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
         return sim
 
@@ -153,7 +156,7 @@ class TopClusModel(BertPreTrainedModel):
         p_word = self.cluster_assign(z_word)            # p(tk|zi(w))
 
         # topic_nums_p = torch.argmax(p_word, dim=1)
-        topic_nums_d = torch.argmax(p_doc, dim=1)
+        # topic_nums_d = torch.argmax(p_doc, dim=1)
         
         sub_p_word = self.subcluster_assign(z_word)
         sub_p_doc = self.subcluster_assign(z_doc)
@@ -180,9 +183,10 @@ class TopClusModel(BertPreTrainedModel):
         # print('===============================')
         # print(sub_p_doc.shape)
         # print(dec_sub_topic[0].shape)
+        # print(p_sub_topic.shape)
         return avg_doc_emb, input_embs, output_embs, rec_doc_emb, p_word, sub_p_word, sub_rec_doc_emb, p_sub_topic
 
-    def inference(self, input_ids, attention_mask, sub=-1):
+    def inference(self, input_ids, attention_mask, sub=False):
         self.bert.eval()
         bert_outputs = self.bert(input_ids,
                                  attention_mask=attention_mask)
@@ -204,11 +208,11 @@ class TopClusModel(BertPreTrainedModel):
         valid_word_ids = input_ids[~attn_mask]
         # shape: (x, 100) - x valid words in latent space, x < 32 * 512
         _, z_word = self.ae(valid_word_embs)
-
-        if sub == -1:
-            sim = self.topic_sim(z_word)
-        else:
-            sim = self.topic_sim(z_word, sub=sub)
+        sim = self.topic_sim(z_word, sub=sub)
+        # if not sub:
+        #     sim = self.topic_sim(z_word)
+        # else:
+        #     sim = self.topic_sim(z_word, sub=True)
 
         # shape (32, 100) - 32 docs in latent space
         _, z_doc = self.ae(doc_emb)

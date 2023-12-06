@@ -22,12 +22,14 @@ class TopClusTrainer(object):
         self.args = args
         pretrained_lm = 'bert-base-uncased'
         self.n_clusters = args.n_clusters
+        self.n_sub_clusters = args.n_sub_clusters
         self.model = TopClusModel.from_pretrained(pretrained_lm,
                                                   output_attentions=False,
                                                   output_hidden_states=False,
                                                   input_dim=args.input_dim,
                                                   hidden_dims=eval(args.hidden_dims),
                                                   n_clusters=args.n_clusters,
+                                                  n_sub_clusters=args.n_sub_clusters,
                                                   kappa=args.kappa)
         self.utils = TopClusUtils()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "mps")
@@ -142,14 +144,14 @@ class TopClusTrainer(object):
             # latent_embs, input_ids, sim
             latent_word_emb_dict = {}
             word_topic_sim_dict = defaultdict(list)
-            print(latent_embs.shape)
+            # print(latent_embs.shape)
             # print(self.input_ids.shape)
             # print(valid_ids.shape)
-            for i in range(10):
+            for i in range(self.n_sub_clusters):
                 _, top_idx = torch.topk(sim[:,i], 3000)
-                top_idx = torch.tensor(top_idx)
+                # top_idx = torch.tensor(top_idx)
                 # latent_embs[top_idx]
-                kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed)
+                kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed, n_init=10)
                 kmeans.fit(latent_embs[top_idx].numpy(), sample_weight=freq[top_idx].numpy())
                 model.sub_topic_emb[i].data=torch.tensor(kmeans.cluster_centers_).to(self.device)
             # print(model.sub_topic_emb.data)
@@ -205,20 +207,38 @@ class TopClusTrainer(object):
         topic_file = open(os.path.join(self.res_dir, f"topics{suffix}.txt"), "w")
         latent_word_emb_list = {}
         id_list = []
-        for i in range(len(topic_sim_mat)):
-            sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
-            # print(sort_idx, cur_idx)
-            _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
-            result_string = []
-            for idx in top_idx:
-                result_string.append(f"{self.inv_vocab[idx.item()]}")
-            topic_list = [latent_word_emb_dict[idx.item()] for idx in top_idx]
-            id_list.append(top_idx)
-            topic_tensor = torch.stack(topic_list, dim=0)
-            latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
-            topic_file.write(f"Topic {sort_idx}: {','.join(result_string)}\n")
-            topic_sim_mat[:, sort_idx] = -1
-            cur_idx = sort_idx
+        with open(os.path.join(self.res_dir, f"sub_topics.txt"), "w") as sub_topic_file:
+            for i in tqdm(range(len(topic_sim_mat)), desc="Find topic words"):
+                sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+                # print(sort_idx, cur_idx)
+                _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk * 10)
+                result_string = []
+                for idx in top_idx:
+                    result_string.append(f"{self.inv_vocab[idx.item()]}")
+                topic_list = [latent_word_emb_dict[idx.item()] for idx in top_idx]
+                topic_tensor = torch.stack(topic_list, dim=0)
+
+                subword_subtopic_sim = torch.matmul(topic_tensor, model.sub_topic_emb[sort_idx].t())
+                for j in range(self.n_sub_clusters):
+                    # sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+                    # print(sort_idx, cur_idx)
+                    _, sub_top_idx = torch.topk(subword_subtopic_sim[:, j], 5)
+                    sub_result_string = []
+                    for idx in sub_top_idx:
+                        sub_word_id = top_idx[idx.item()]
+                        sub_result_string.append(f"{self.inv_vocab[sub_word_id.item()]}")
+                    sub_topic_file.write(f"Topic{i}_{j}: {','.join(sub_result_string)}\n")
+                sub_topic_file.write("\n")
+                # print(topic_tensor.shape)
+                # print(model.sub_topic_emb[sort_idx].shape)
+                # exit()
+                
+                id_list.append(top_idx)
+                
+                latent_word_emb_list[int(sort_idx)]=(top_idx, topic_tensor) 
+                topic_file.write(f"Topic {sort_idx}: {','.join(result_string)}\n")
+                topic_sim_mat[:, sort_idx] = -1
+                cur_idx = sort_idx
 
         latent_word_emb_list=sorted(latent_word_emb_list.items())
         print(latent_word_emb_list[0])
@@ -257,46 +277,49 @@ class TopClusTrainer(object):
         model.eval()
         latent_doc_embs = []
         b = 0
-        for j in range(10):
-            word_topic_sim_dict = defaultdict(list)
-            with torch.no_grad():
-                for batch in tqdm(dataset_loader, desc=f"Inference_{j}"):
-                    # shape: (32,512)
-                    input_ids = batch[0].to(self.device)
-                    attention_mask = batch[1].to(self.device)
-                    max_len = attention_mask.sum(-1).max().item()
-                    input_ids, attention_mask = tuple(t[:, :max_len] for t in (input_ids, attention_mask))
-                    # print(input_ids.shape)
-                    # print(input_ids)
-                    latent_doc_emb, latent_word_embs, word_ids, sim = model.inference(input_ids, attention_mask, sub=j)
-                    # latent_doc_embs.append(latent_doc_emb.detach().cpu())
-                    for word_id, s in zip(word_ids, sim):
-                        word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
-                    # if b == 1:
-                    #     break
-                    b += 1
-            word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters))
-            for i in range(len(word_topic_sim)):
-                # if the word appears in all the documents more than 5 times
-                if len(word_topic_sim_dict[i]) > 5:
-                    word_topic_sim[i] = torch.cat(word_topic_sim_dict[i], dim=0).mean(dim=0)
-            word_topic_sim[self.filter_idx, :] = -1
 
-            topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
-            # print(topic_sim_mat)
-            cur_idx = torch.randint(len(topic_sim_mat), (1,))
-            topic_file = open(os.path.join(self.res_dir, f"topics_sub_{j}.txt"), "w")
-            for i in range(len(topic_sim_mat)):
-                sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+        word_topic_sim_dict = defaultdict(list)
+        with torch.no_grad():
+            for batch in tqdm(dataset_loader, desc=f"Sub_Inference"):
+                # shape: (32,512)
+                input_ids = batch[0].to(self.device)
+                attention_mask = batch[1].to(self.device)
+                max_len = attention_mask.sum(-1).max().item()
+                input_ids, attention_mask = tuple(t[:, :max_len] for t in (input_ids, attention_mask))
+                # print(input_ids.shape)
+                # print(input_ids)
+                latent_doc_emb, latent_word_embs, word_ids, sim = model.inference(input_ids, attention_mask, sub=True)
+                # latent_doc_embs.append(latent_doc_emb.detach().cpu())
+                # print(word_ids.shape)
+                # print(sim.shape)
+                for word_id, s in zip(word_ids, sim):
+                    word_topic_sim_dict[word_id.item()].append(s.cpu().unsqueeze(0))
+                # if b == 1:
+                #     break
+                b += 1
+        word_topic_sim = -1 * torch.ones((len(self.vocab), self.n_clusters*self.n_sub_clusters))
+        for i in range(len(word_topic_sim)):
+            # if the word appears in all the documents more than 5 times
+            if len(word_topic_sim_dict[i]) > 5:
+                word_topic_sim[i] = torch.cat(word_topic_sim_dict[i], dim=0).mean(dim=0)
+        word_topic_sim[self.filter_idx, :] = -1
+
+        # topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
+        # print(topic_sim_mat)
+        # cur_idx = torch.randint(len(topic_sim_mat), (1,))
+        # cur_idx = 0
+        with open(os.path.join(self.res_dir, f"sub_topics.txt"), "w") as topic_file:
+            for i in tqdm(range(self.n_sub_clusters*self.n_clusters), desc="Find topic words"):
+                # sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
                 # print(sort_idx, cur_idx)
-                _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
+                _, top_idx = torch.topk(word_topic_sim[:, i], topk)
                 result_string = []
                 for idx in top_idx:
                     result_string.append(f"{self.inv_vocab[idx.item()]}")
                 
-                topic_file.write(f"Topic{j}_{sort_idx}: {','.join(result_string)}\n")
-                topic_sim_mat[:, sort_idx] = -1
-                cur_idx = sort_idx
+                topic_file.write(f"Topic{i // self.n_sub_clusters}_{i % self.n_sub_clusters}: {','.join(result_string)}\n")
+                # topic_sim_mat[:, i] = -1
+                # cur_idx = sort_idx
         return 
 
     # compute target distribution for distinctive topic clustering
@@ -348,8 +371,8 @@ class TopClusTrainer(object):
                 total_sub_rec_doc_loss += sub_rec_doc_loss.item()
                 total_sub_clus_loss += sub_clus_loss.item()
 
-                loss += sub_clus_loss
-                loss += sub_rec_doc_loss*self.args.cluster_weight
+                # loss += sub_clus_loss
+                # loss += sub_rec_doc_loss*self.args.cluster_weight
 
                 # # control the concentration of subtopic
                 # concentration = 0.8
@@ -363,13 +386,13 @@ class TopClusTrainer(object):
                 # total_sub_topic_loss += sub_topic_loss.item()
                 loss_function = nn.CrossEntropyLoss()
                 label_list = []
-                for i in range(self.n_clusters * self.n_clusters):
-                    label_list.append(i//self.n_clusters)
-                true_labels = torch.tensor(label_list)
+                for i in range(self.n_clusters * self.n_sub_clusters):
+                    label_list.append(i // self.n_clusters)
+                true_labels = torch.tensor(label_list).to(self.device)
                 sub_top_loss = loss_function(p_subtopic, true_labels)
-                loss += sub_top_loss
+                # loss += sub_top_loss
                 total_sub_topic_loss += sub_top_loss.item()
-
+                sub_loss = sub_clus_loss + sub_rec_doc_loss*self.args.cluster_weight + sub_top_loss
                 # print(total_sub_topic_loss)
                 # for i in range(len(sub_topic_sim_mat)):
                 #     for j in range(len(sub_topic_sim_mat[i])):
@@ -380,6 +403,7 @@ class TopClusTrainer(object):
 
 
                 loss.backward()
+                sub_loss.backward()
                 optimizer.step()
             # if (epoch+1) % 10 == 0 and self.args.do_inference:
             #     self.inference(topk=self.args.k, suffix=f"_{epoch}")
@@ -392,12 +416,12 @@ class TopClusTrainer(object):
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-
     parser.add_argument('--dataset', default='yelp')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--n_clusters', default=100, type=int, help='number of topics')
+    parser.add_argument('--n_sub_clusters', default=5, type=int, help='number of sub topics')
     parser.add_argument('--k', default=10, type=int, help='number of top words to display per topic')
     parser.add_argument('--input_dim', default=768, type=int, help='embedding dimention of pretrained language model')
     parser.add_argument('--pretrain_epoch', default=20, type=int, help='number of epochs for pretraining autoencoder')
@@ -426,7 +450,7 @@ if __name__ == '__main__':
     # if args.do_cluster:
     #     trainer.clustering(epochs=args.epochs)
     if args.do_inference:
-        model_path = os.path.join("datasets", args.dataset, "sub_model.pt")
+        model_path = os.path.join("datasets", args.dataset, "sub_model_10_10_detach.pt")
         # model_path = os.path.join("datasets", args.dataset, "model.pt")
         try:
             trainer.model.load_state_dict(torch.load(model_path, map_location=trainer.device))
@@ -435,6 +459,6 @@ if __name__ == '__main__':
             print("No model found! Run clustering first!")
             exit(-1)
         trainer.inference(topk=args.k)
-        trainer.sub_inference(topk=args.k)
+        # trainer.sub_inference(topk=args.k)
         # trainer.inference(topk=args.k, suffix=f"_original")
         # trainer.inference(topk=args.k, suffix=f"_final")
