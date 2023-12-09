@@ -92,6 +92,8 @@ class TopClusModel(BertPreTrainedModel):
         # print("sub topic emb shape:", sub_topic_emb.shape)
 
         sim = torch.matmul(z, sub_topic_emb.t()) * self.kappa
+        # sim = torch.matmul(z.detach(), sub_topic_emb.t()) * self.kappa
+
         p = F.softmax(sim, dim=-1)
         # print("p shape:", p.shape)
         return p
@@ -102,7 +104,8 @@ class TopClusModel(BertPreTrainedModel):
             self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
             sim = torch.matmul(z, self.topic_emb.t())
         else:
-            self.sub_topic_emb[sub].data = F.normalize(self.sub_topic_emb.data, dim=-1)
+            self.sub_topic_emb.data = F.normalize(self.sub_topic_emb.data, dim=-1)
+            # self.sub_topic_emb[sub].data = F.normalize(self.sub_topic_emb.data, dim=-1)
             sim = torch.matmul(z, self.sub_topic_emb[sub].t())
         # self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
         return sim

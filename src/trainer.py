@@ -285,18 +285,27 @@ class TopClusTrainer(object):
             topic_sim_mat = torch.matmul(model.topic_emb, model.topic_emb.t())
             # print(topic_sim_mat)
             cur_idx = torch.randint(len(topic_sim_mat), (1,))
-            topic_file = open(os.path.join(self.res_dir, f"topics_sub_{j}.txt"), "w")
-            for i in range(len(topic_sim_mat)):
-                sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
-                # print(sort_idx, cur_idx)
-                _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
-                result_string = []
-                for idx in top_idx:
-                    result_string.append(f"{self.inv_vocab[idx.item()]}")
+            with open(os.path.join(self.res_dir, f"topics_sub_{j}.txt"), "w") as topic_file:
+                # for i in range(len(topic_sim_mat)):
+                #     sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+                #     # print(sort_idx, cur_idx)
+                #     _, top_idx = torch.topk(word_topic_sim[:, sort_idx], topk)
+                #     result_string = []
+                #     for idx in top_idx:
+                #         result_string.append(f"{self.inv_vocab[idx.item()]}")
+                    
+                #     topic_file.write(f"Topic{j}_{sort_idx}: {','.join(result_string)}\n")
+                #     topic_sim_mat[:, sort_idx] = -1
+                #     cur_idx = sort_idx
                 
-                topic_file.write(f"Topic{j}_{sort_idx}: {','.join(result_string)}\n")
-                topic_sim_mat[:, sort_idx] = -1
-                cur_idx = sort_idx
+                for i in range(self.n_clusters):
+                    # sort_idx = topic_sim_mat[cur_idx].argmax().cpu().numpy()
+                    # print(sort_idx, cur_idx)
+                    _, top_idx = torch.topk(word_topic_sim[:, i], topk)
+                    result_string = []
+                    for idx in top_idx:
+                        result_string.append(f"{self.inv_vocab[idx.item()]}")
+                    topic_file.write(f"Topic{j}_{i}: {','.join(result_string)}\n")
         return 
 
     # compute target distribution for distinctive topic clustering
@@ -365,7 +374,7 @@ class TopClusTrainer(object):
                 label_list = []
                 for i in range(self.n_clusters * self.n_clusters):
                     label_list.append(i//self.n_clusters)
-                true_labels = torch.tensor(label_list)
+                true_labels = torch.tensor(label_list).to(self.device)
                 sub_top_loss = loss_function(p_subtopic, true_labels)
                 loss += sub_top_loss
                 total_sub_topic_loss += sub_top_loss.item()
