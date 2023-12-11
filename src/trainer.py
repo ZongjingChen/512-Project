@@ -126,7 +126,7 @@ class TopClusTrainer(object):
 
         print(f"Running K-Means for initialization")
         kmeans = KMeans(n_clusters=self.n_clusters, random_state=self.args.seed)
-        kmeans.fit(latent_embs.numpy(), sample_weight=freq.numpy())
+        kmeans.fit(latent_embs.cpu().numpy(), sample_weight=freq.cpu().numpy())
         model.topic_emb.data = torch.tensor(kmeans.cluster_centers_).to(self.device)
         # save topic_emb
         # topic_emb_path = os.path.join(self.res_dir, "topic_emb.pt")
