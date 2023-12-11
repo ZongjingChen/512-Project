@@ -62,12 +62,14 @@ class TopClusModel(BertPreTrainedModel):
         for param in self.bert.parameters():
             param.requires_grad = False
 
-    def cluster_assign(self, z, detach=False):
+    def cluster_assign(self, z, detach=False, softmax=True):
         self.topic_emb.data = F.normalize(self.topic_emb.data, dim=-1)
         if detach:
             sim = torch.matmul(z, self.topic_emb.detach().t()) * self.kappa
         else:
             sim = torch.matmul(z, self.topic_emb.t()) * self.kappa
+        if not softmax:
+            return sim
         p = F.softmax(sim, dim=-1)
         return p
 
@@ -91,8 +93,8 @@ class TopClusModel(BertPreTrainedModel):
         sub_topic_emb = self.sub_topic_emb.view(-1, self.sub_topic_emb.shape[-1])
         # print("sub topic emb shape:", sub_topic_emb.shape)
 
-        sim = torch.matmul(z, sub_topic_emb.t()) * self.kappa
-        # sim = torch.matmul(z.detach(), sub_topic_emb.t()) * self.kappa
+        # sim = torch.matmul(z, sub_topic_emb.t()) * self.kappa
+        sim = torch.matmul(z.detach(), sub_topic_emb.t()) * self.kappa
 
         p = F.softmax(sim, dim=-1)
         # print("p shape:", p.shape)
@@ -179,7 +181,7 @@ class TopClusModel(BertPreTrainedModel):
         # print('p doc shape: ', p_doc.shape)
         # sub_rec_doc_emb = torch.matmul(sub_rec_doc_emb, p_doc).squeeze(2)
         # print('sub rec doc emb shape: ', sub_rec_doc_emb.shape)
-        p_sub_topic = self.cluster_assign(sub_topic_emb, detach=True)
+        p_sub_topic = self.cluster_assign(sub_topic_emb, detach=True, softmax=False)
         # print('===============================')
         # print(sub_p_doc.shape)
         # print(dec_sub_topic[0].shape)
